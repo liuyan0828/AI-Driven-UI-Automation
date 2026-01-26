@@ -3,10 +3,11 @@ import base64
 import json
 import re
 import os
-from click import prompt
 from playwright.async_api import async_playwright
 from openai import OpenAI
 from dotenv import load_dotenv
+from typing import Literal, Optional
+from pydantic import BaseModel, Field
 
 # Load environment variables
 load_dotenv()
@@ -22,6 +23,21 @@ client = OpenAI(
     api_key=api_key,
     base_url="https://ark.cn-beijing.volces.com/api/v3"
 )
+
+class WebAction(BaseModel):
+    """
+    Schema for the AI Agent's decision-making process.
+    This model enforces structured output for the LLM, ensuring that the reasoning is captured and the actions are type-safe.
+    """
+    # --- Reasoning Layer ---
+    thought: str = Field(description="Internal reasoning: Why this action is chosen based on the goals.")
+    # --- Action Selection Layer ---
+    action_type: Literal["click", "type", "scroll", "wait", "finish"] = Field(description="The next atomic action to perform.")
+    # --- Parameter Layer ---
+    x:Optional[int] = Field(None, description="The X coordinate for click actions.")
+    y:Optional[int] = Field(None, description="The Y coordinate for click actions.")
+    text:Optional[str] = Field(None, description="The text content for 'type' action.")
+
 
 def simplify_accessibility_tree(node):
     if not node:
@@ -80,21 +96,27 @@ async def main():
         # C. Send to Doubao Vision Model
         print("Requesting AI reasoning (Vision + Semantic)...")
         prompt = f"""
-        You are an expert Web Automation Agent.
-        Your task is to find the center coordinates(x, y) of the 'Google Sreach' button.
-
-        CONTEXT:
-        - Below is the simplified Accessibility Tree of the current page.
-        - You are also provided with a screentshot of the page.
+        You are an expert Web Automation Agent.Analyze the Accessibility Tree and Screenshot.
+        Goal: Click the 'Google Search' button.
 
         ACCESSIBILITY TREE:
         {tree_json_str}
 
-        INSTRUCTIONS:
-        1. Use the Accessibility Tree to identify the semantic role and name of the target.
-        2. Cross-reference with the screenshot to determine the precise pixel coordinates.
-        3. Respond ONLY with a valid JSON object:{{"x":interger, "y":interget}}.
-        4. Do not include any explanation or additional text.
+        OUTPUT INSTRUCTIONS:
+        Your output must be a JSON object with the following EXACT keys:
+        1. "thought": A brief explanation of why you are taking this action.
+        2. "action_type": Must be one of ["click", "type", "scroll", "wait", "finish"].
+        3. "x": (Integer) The X coordinate for clicking.
+        4. "y": (Integer) The Y coordinate for clicking.
+        5. "text": (String) Only for "type" actions.
+
+        Example:
+        {{
+        "thought": "I found the search button in the center-bottom of the screen.",
+        "action_type": "click",
+        "x": 640,
+        "y": 450
+        }}
         """
 
         # Trigger the "Chat Completion" API to request a model response
@@ -124,7 +146,7 @@ async def main():
                     ]
                 }
             ],
-            
+            response_format={"type": "json_object"},
             # temperature: Controls the randomness of the output.
             # 0 = "Deterministic": The model always chooses the token with the highest probability.
             # In QA automation, this must be 0 to ensure test results are stable and reproducible.
@@ -132,22 +154,23 @@ async def main():
         )
         
         # D. Parse coordinates and perform click 
-        res_text = response.choices[0].message.content
-        print(f"Model Response: {res_text}")
-        
-        # Extract JSON using Regex(in case the model adds extra conversation)
-        match = re.search(r'\{.*\}', res_text)
-        if match:
-            try:
-                coords = json.loads(match.group())
-                target_x = coords['x']
-                target_y = coords['y']
-                print(f"AI decided to click coordinates: {target_x}, {target_y}")
-                await page.mouse.click(target_x, target_y)
-            except json.JSONDecodeError:
-                print("Error: Could not parse JSON from AI response.")
-        else:
-            print("Error: No valid coordinates found in the response.")
+        res_content = response.choices[0].message.content
+        try:
+            # Pydantic handles the validation and conversion into a Python object.
+            action = WebAction.model_validate_json(res_content)
+
+            print(f"AI THOUGHT: {action.thought}")
+            print(f"AI ACTION: {action.action_type}")
+
+            if action.action_type == "click":
+                print(f"Executing click at ({action.x}, {action.y})")
+                await page.mouse.click(action.x, action.y)
+            elif action.action_type == "type":
+                print(f"Typing: {action.text}")
+                await page.keyboard.type(action.text)
+
+        except Exception as e:
+            print(f"Reasoning Parse Error: {e}\nRaw Response: {res_content}")
 
         
         await asyncio.sleep(3)
