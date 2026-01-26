@@ -10,6 +10,7 @@ This project implements an intelligent, autonomous web agent designed to navigat
 
 ## 🛠 Tech Stack
 - **Language**: Python 3.x
+- **Validation**: [Pydantic v2](https://docs.pydantic.dev/)
 - **Automation**: [Playwright](https://playwright.dev/python/)
 - **AI Engine**: Doubao Vision Model (via Ark API) / OpenAI Multimodal API
 - **Protocol**: Chrome DevTools Protocol (CDP)
